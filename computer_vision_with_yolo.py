@@ -23,6 +23,8 @@ from sklearn.preprocessing import LabelEncoder
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
+import yaml
 
 #install YOLOv5
 !git clone https://github.com/ultralytics/yolov5
@@ -32,11 +34,6 @@ import matplotlib.pyplot as plt
 # Add the yolov5 directory to the Python path
 import sys
 sys.path.append('/content/yolov5')
-
-
-#import YOLO and Torch
-import torch
-from yolov5.models.yolo import Model as YOLOv5 # Import YOLOv5 from the correct location
 
 #check if GPU is available
 print(f'GPU Available: {torch.cuda.is_available()}')
@@ -48,34 +45,38 @@ Convert the annotated data into YOLO format, train and make predictions.
 
 """#Set Kaggle API & Download Dataset"""
 
-from google.colab import files
-files.upload()  # This will prompt you to upload the kaggle.json file
+#from google.colab import files
+#files.upload()   This will prompt you to upload the kaggle.json file
 
 # Create a Kaggle directory
-os.makedirs('/root/.kaggle', exist_ok=True)
+#os.makedirs('/root/.kaggle', exist_ok=True)
 
 # Move the kaggle.json file to the appropriate location
-!cp kaggle.json /root/.kaggle/
+#!cp kaggle.json /root/.kaggle/
 
 # Set permissions for the kaggle.json file
-!chmod 600 /root/.kaggle/kaggle.json
+#!chmod 600 /root/.kaggle/kaggle.json
 
 # Download the dataset
-!kaggle datasets download -d ohagwucollinspatrick/ghana-crop-disease
+#!kaggle datasets download -d ohagwucollinspatrick/ghana-crop-disease
 
 # Mount Google Drive
-from google.colab import drive
-drive.mount('/content/drive')
+#from google.colab import drive
+#drive.mount('/content/drive')
 
 # Upload the dataset
-!mv ghana-crop-disease.zip /content/drive/MyDrive/
+#!mv ghana-crop-disease.zip /content/drive/MyDrive/
 
 '''
 The dataset has been downloaded and uploaded to google drive. Run the above cells to get the dataset.
 Run the cells below to continue the project.
 '''
 
-"""#Data Preprocessing and Label Annotation"""
+# Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+"""#Data Preprocessing and Validation"""
 
 # Load the annotation csv
 train = pd.read_csv('/content/drive/MyDrive/zindi_train.csv')
@@ -86,14 +87,16 @@ train.head()
 # Check the number of unique classes
 train['class'].nunique()
 
-'''
-There are 23 different annotated classes indicating there are 23 different diseases identified from the images.
+# Check the unique classes
+train['class'].unique()
+
+"""There are 23 different annotated classes indicating there are 23 different diseases identified from the images.
 The ymin, ymax, xmin, xmax are the positions of the various bouding boxes around the disease.
 We will need to convert the train set to YOLO format. The following preprocessing steps will take place:
 1. Perform data validation to ensure features are of the correct data type.
 2. We will convert the values under the class column to numeric
 3. We will scale values of ymin, ymax, xmin, xmax
-'''
+"""
 
 # Check the data
 train.info()
@@ -101,6 +104,8 @@ train.info()
 '''
 The data is very clean and there are no missing values and the data types are correct.
 '''
+
+"""#Create YOLO Format Annotation for Train"""
 
 # Convert class to numeric
 le = LabelEncoder()
@@ -114,17 +119,141 @@ image_width = 640
 image_height = 640
 
 # Directory to save YOLO annotations
-output_dir = '/content/dataset/labels'
+output_dir = '/content/dataset/labels/train'
 os.makedirs(output_dir, exist_ok=True)
 
 # Convert the data into YOLO format
 for index, row in train.iterrows():
-  image_name = row['image_id'].replace('.jpg', '')
-  class_id = row['class']
-  xmin, ymin, xmax, ymax = row['xmin'], row['ymin'], row['xmax'], row['ymax']
+    # Extract relevant data from each row
+    image_name = row['Image_ID'].replace('.jpg', '')  # Image name without extension
+    class_id = row['class']  # The class/category ID
+    xmin, ymin, xmax, ymax = row['xmin'], row['ymin'], row['xmax'], row['ymax']  # Bounding box coordinates
 
-  # Calculate the center coordinates and dimensions
-  x_center = ((xmax + xmin) / 2) / image_width
-  y_center = ((ymax + ymin) / 2) / image_height
-  width = (xmax - xmin) / image_width
-  height = (ymax - ymin) / image_height
+    # Calculate the center coordinates and dimensions in YOLO format (normalized)
+    x_center = ((xmax + xmin) / 2) / image_width
+    y_center = ((ymax + ymin) / 2) / image_height
+    width = (xmax - xmin) / image_width
+    height = (ymax - ymin) / image_height
+
+    # Create a corresponding annotation file for each image
+    train_yolo_annotation_file = os.path.join(output_dir, f'{image_name}.txt')
+
+    # Write the annotation to the file
+    with open(train_yolo_annotation_file, 'a') as f:
+        f.write(f"{class_id} {x_center} {y_center} {width} {height}\n")
+
+"""#Read the Images from the Dataset"""
+
+#Path to image
+source_path = '/content/drive/MyDrive/ghana-crop-disease.zip'
+
+#Destination Path
+extraction_path = '/content/dataset/'
+os.makedirs(extraction_path, exist_ok=True)
+#Read images
+with ZipFile(source_path, 'r') as zip_ref:
+  zip_ref.extractall(extraction_path)
+  #Output if extraction is done
+  print('Done')
+
+'''
+After extracting delete the submission file test and train from the dataset folder.
+These are redundant files
+'''
+
+"""#Creating and Organizing the Directory for YOLOv5
+
+From the above cells we have created the YOLO format for the test annotations created and have extracted the images. Now we will create directories and prepare it for the YOLOv5 model.In the cell below, we are moving the images into train subdirectory
+"""
+
+# Path to extracted images
+all_images_dir = '/content/dataset/images'
+
+# Directory to save train images
+train_image_dir = '/content/dataset/images/train'
+os.makedirs(train_image_dir, exist_ok=True)
+
+# Directory to save validation images
+val_image_dir = '/content/dataset/images/val'
+os.makedirs(val_image_dir, exist_ok=True)
+
+# Path to your YOLO train annotations
+train_labels_dir = '/content/dataset/labels/train'
+
+# List of images that are in the train set (based on annotation files)
+train_images = [os.path.splitext(f)[0] + '.jpg' for f in os.listdir(train_labels_dir) if f.endswith('.txt')]
+
+# Move corresponding train images to the train folder
+for image_name in train_images:
+    src_image_path = os.path.join(all_images_dir, image_name)
+    dest_image_path = os.path.join(train_image_dir, image_name)
+
+    if os.path.exists(src_image_path):
+        shutil.move(src_image_path, dest_image_path)
+    else:
+        print(f"Image {image_name} not found in {all_images_dir}")
+
+print(f"Train images have been moved to: {train_image_dir}")
+
+"""The cell below moves the rest of the images into val subdirectory"""
+
+# Move the remaining images (the ones that haven't been moved to train) to the val folder
+for image_name in os.listdir(all_images_dir):
+    src_image_path = os.path.join(all_images_dir, image_name)
+
+    # Ensure we're only moving image files, not directories
+    if os.path.isfile(src_image_path):
+        dest_image_path = os.path.join(val_image_dir, image_name)
+        shutil.move(src_image_path, dest_image_path)
+
+print(f"Validation images have been moved to: {val_image_dir}")
+
+# Paths for current image directories
+val_dir = '/content/dataset/images/val'     # path for val images should be
+train_dir_nested = '/content/dataset/images/val/train'  # Current path of the train folder (inside val)
+train_dir_final = '/content/dataset/images/train'       # Desired location for train folder
+
+# 1. Move all files from val directory, but check if they already exist to avoid conflicts
+for image_name in os.listdir(val_dir):
+    src_image_path = os.path.join(val_dir, image_name)
+    dest_image_path = os.path.join(val_dir, image_name)
+
+    # Move only image files (ignore directories like 'train/') and check if they already exist
+    if os.path.isfile(src_image_path) and not os.path.exists(dest_image_path):
+        shutil.move(src_image_path, dest_image_path)
+
+# 2. Move the train folder out of val and place it in the correct location
+if os.path.exists(train_dir_nested):
+    shutil.move(train_dir_nested, train_dir_final)
+    print(f"Train folder has been moved to: {train_dir_final}")
+else:
+    print(f"Train folder not found at {train_dir_nested}.")
+
+print(f"Validation images are in: {val_dir}")
+
+"""# Creating YAML Configuration file"""
+
+# instantiate the yaml path
+yaml_path = '/content/dataset/dataset.yaml'
+
+# add the path
+os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
+with open(yaml_path, 'w') as yaml_file:
+    yaml_file.dump()
+# Define the details of your dataset for YOLOv5
+dataset_yaml = {
+    'train': '/content/dataset/images/train',  # Path to your training images
+    'val': '/content/dataset/images/val',      # Path to your validation images
+    'nc': 21,  # Number of different classes
+    'names': ['Pepper_Bacterial_Spot', 'Pepper_Fusarium', 'Corn_Cercospora_Leaf_Spot','']
+}
+
+# Instantiate the yaml path
+yaml_path = '/content/dataset/dataset.yaml'
+
+# Create directory and write the YAML file
+os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
+with open(yaml_path, 'w') as yaml_file:
+    yaml.dump(dataset_yaml, yaml_file, default_flow_style=False)
+
+print(f"YAML file created at: {yaml_path}")
